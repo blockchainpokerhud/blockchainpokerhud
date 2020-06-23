@@ -88,3 +88,4 @@ coverage/
 test-reports/
 .env.dependencies
 config.json
+build.sh
