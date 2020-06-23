@@ -1217,7 +1217,7 @@ function atTable() {
 // Currently unused. May be used for bb/100 calculations
 function getBigBlindAmount() {
   if(typeof table_state.blinds !== "undefined") {
-    return table_state.blinds.big;
+    return table_state.bigBlindAmount;
   }
   return(0);
 }
@@ -1312,7 +1312,7 @@ function updateBettingAction() {
     let round = table_state.round;
     if(round !== "SHOWDOWN") {
       if(typeof table_state.blinds !== "undefined") {
-        let bigblind = table_state.blinds.big;
+        let bigblind = table_state.bigBlindAmount;
         for(seat of table_state.seats) {
           let bet_size = seat.bet;
           let name = seat.name;
@@ -1840,7 +1840,7 @@ function updateGame() {
         topup_btn = $("button[ng-disabled='pendingOptions.topUp']");
         if($(topup_btn).is(":visible")) {
           let max_buyin = table_state.maxBuyIn;
-          let blind_size = table_state.blinds.big;
+          let blind_size = table_state.bigBlindAmount;
           let my_stack = you_state.stack;
           // Only top up when at least 2 big blinds below max
           if(my_stack < (max_buyin - blind_size)) {
