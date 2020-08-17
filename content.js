@@ -11,6 +11,60 @@
  **/
 
 /**
+ * CHANGELOG
+ **/
+
+var changelog = [
+  'THIS VERSION',
+  '------------',
+  '- Optimized table summary code (HUD is faster now)',
+  '- Preparation for 3-bet, and % to showdown stats',
+  '0.0.31',
+  '--------',
+  '- Fixed syntax error',
+  '0.0.30',
+  '--------',
+  '- When you sit out at a table, you will sit in and out after every new hand',
+  '  has started, so that you will not lose your seat.',
+  '0.0.29',
+  '- Fixed quick table links',
+  '- Added all time winnings/losses display',
+  '',
+  '0.0.28',
+  '------',
+  '- Added (non-freeroll) tournament tables to quick links',
+  '0.0.27',
+  '------',
+  '- Stats are now based on the previous week of play plus the current week.',
+  '  If there are insufficient hands, then all time stats will be displayed.',
+  '  This should give you a better understanding of the current stats of villains.',
+  '- Stats stick to a player, even if player changes name',
+  '0.0.26',
+  '------',
+  '- Last hand strength was removed by blockchain.poker developers after',
+  '  users massively started to call each other out. As such, hovering',
+  '  will no longer display last hand strength unless cards were revealed',
+  '- Fixed bug that emited socket messages prior to being logged in',
+  '- Improved efficiency of code in general',
+  '0.0.25',
+  '------',
+  '- Hovering over a player stats box now reveals their last hand strength',
+  '- Fixed bug in table finder not waiting until after log in to find tables',
+  '- Added CHANGELOG to HUD to inform users of new features',
+  '',
+  'Teaser for next release: Weekly stats are being implemented.',
+  '',
+  '0.0.24',
+  '------',
+  '- Added note icon. Hovering over stats box displays notes you have on players',
+  '',
+  '0.0.23',
+  '------',
+  '- Added table finder with quick links',
+  '- Added icon for top 100 earners'
+];
+
+/**
  * Icons for villains
  **/
 
@@ -23,6 +77,8 @@ var shark_icon = '&#129416;';
 var rainbow_icon = '&#127752;';
 var robot_icon = '&#129302;';
 var turtle_icon = '&#128034;';
+var earner_icon = '&#127942;';
+var note_icon = '&#128206;';
 
 /**
  * Global variables
@@ -32,15 +88,24 @@ var apiKey = "unset";
 var autotopup = false;
 var betting_action = [];
 var eula_agreed = false;
+var last_changelog = 0;
 var ev_map = [];
+var hand_history = [];
+var hand_history_map = {};
 var hand_rank = [];
 var hand_strength = "undefined";
 var high_bet = 0;
 var hud_components = [];
 var last_round = "";
+var open_tables = [];
 var played_hand = [];
+var player_notes = {};
 var processed_hand = [];
 var table_state = {};
+var rewards_balance = 0;
+var top_earners = [];
+var tournament_tables = [];
+var transaction_history = [];
 var villain_alias_map = [];
 var villain_bbd_hp_map = [];
 var villain_bbd_map = [];
@@ -48,6 +113,7 @@ var villain_cb_hp_map = [];
 var villain_cb_map = [];
 var villain_ev_map = [];
 var villain_hands = [];
+var villain_is_weekly_map = [];
 var villain_hp_map = [];
 var villain_mucked = [];
 var villain_pfr_map = [];
@@ -56,6 +122,9 @@ var villain_vpip_map = [];
 var vpip_hand = [];
 var vpip_map = [];
 var you_state = {};
+var manifestData = chrome.runtime.getManifest();
+var hud_version = manifestData.version;
+var last_hand_id = 0;
 
 /**
  * Add table_state script to pass window.table and window.you
@@ -70,13 +139,42 @@ s.onload = function() {
 };
 
 /**
- * Listener for table_state passed data
+ * Listener for socket returned data
  **/
 document.addEventListener('RW759_connectExtension', function(e) {
   data = e.detail;
-  table_state = data.table;
-  you_state = data.you;
+  rewards_balance = data.rewards_balance;
+  top_earners = data.top_earners;
+  open_tables = data.open_tables;
+  player_notes = data.player_notes;
+  tournament_tables = data.tournament_tables;
+  transaction_history = data.transaction_history;
 });
+
+/**
+ * Handle return messages
+ **/
+window.addEventListener('message', function(event) {
+  if(event.origin !== 'https://blockchain.poker') return;
+  let response = event.data;
+  if(typeof response["type"] !== "undefined") {
+    switch(response["type"]) {
+      case "getHistoryResponse":
+        hand_history = response["payload"];
+        hand_id = response["hand_id"];
+        result = JSON.stringify(parseHistory(hand_history));
+        addToHistory(result, hand_id);
+        break;
+      case "getTableStateResponse":
+        table_state = response["payload"];
+        break;
+      case "getYouStateResponse":
+        you_state = response["payload"];
+        break;
+    }
+  }
+  return;
+}, false);
 
 /**
  * CSS code for mouseover tooltips
@@ -131,8 +229,6 @@ let tooltip_css = [
 ].join("\n");
 $("head").append(tooltip_css);
 
-/**
- **/
 chrome.storage.sync.get({
   eula_agreed: false
 }, function(items) {
@@ -179,6 +275,22 @@ chrome.storage.sync.get({
     ].join("\n");
     $("body").append(eula_html);
     $('.eulabutton').on('click', function() { chrome.storage.sync.set({ eula_agreed: true }, function() { eula_agreed = true; $('.eula').fadeOut(); location.reload()})});
+  } else {
+    chrome.storage.sync.get({
+      last_changelog: 0
+    }, function(items) {
+        last_changelog = items.last_changelog;
+        if(last_changelog !== hud_version) {
+          let changelog_html = [
+            "<div class='changelog' style='opacity: 0.8; background: #000; width: 50%; height: 50%; z-index: 1000; top: 25%; left: 25%; position: fixed; border: 1px solid #fff; padding: 5px;'><h1><b>Changes in " + hud_version + " </b></h1><hr><textarea style='width: 99%; height: 60%; border:0px; resize: none; color: #fff; background-color: #000; '>",
+            changelog.join("\n"),
+            "</textarea><hr /><button class='changelogbutton'>Continue</button>",
+          ].join("\n");
+          $("body").append(changelog_html);
+          $('.changelogbutton').on('click', function() { chrome.storage.sync.set({ last_changelog: hud_version }, function() { last_changelog = hud_version; $('.changelog').fadeOut(); location.reload()})});
+        }
+      }
+    );
   }
 });
 
@@ -193,256 +305,265 @@ chrome.storage.sync.get({
   autotopup = items.autotopup;
 });
 
+function sortHashTableByKey(hash, key_order, remove_key)
+{
+  var tmp = [],
+    end = [],
+    f_order = null;
+  remove_key = remove_key || false;
+  for (var key in hash)
+  {
+    if (hash.hasOwnProperty(key))
+    {
+      tmp.push(hash[key][key_order]);
+    }
+  }
+  if (hash && hash[0] && typeof(hash[0][key_order]) === 'number')
+  {
+    f_order = function (a, b) { return a - b; };
+  }
+  tmp.sort(f_order);
+  function getHash(hash, value)
+  {
+    for (k in hash)
+    {
+      if (hash[k] && hash[k][key_order] === value)
+      {
+        return { key : k, hash : hash[k] };
+      }
+    }
+  }
+  for (var i = 0, l = tmp.length; i < l; i++)
+  {
+    tmp[i] = getHash(hash, tmp[i]);
+    if (remove_key)
+    {
+      delete tmp[i].hash[key_order];
+    }
+    if (!hash.length)
+    {
+      end[tmp[i].key] = tmp[i].hash;
+    }
+    else
+    {
+      end.push(tmp[i].hash);
+    }
+  }
+  return end;
+}
+
+/**
+ * Parse the returned Hand History
+ **/
+function parseHistory(history) {
+  // Determine until which street this hand was played
+  let last_round = 0;
+  let round_map = {}
+  for(const[i, round] of history["rounds"].entries()) {
+    last_round = i;
+    round_map[i] = Date.parse(round.time);
+  }
+
+  let pfr_players = [];
+  let raise_highscore = 0;
+  let aggressor_player = "";
+  let action_map = {};
+  let vpip = [];
+  let in_hand = [];
+  let bb_player = "";
+  let sb_player = "";
+  let btn_player = "";
+  let bb_def = false;
+  let showdowns = [];
+  let cbet_player = "";
+  let prev_bet_in = false;
+  let id_list = {};
+  let sd_players = [];
+  let river_players = [];
+  let f_river_players = [];
+  let bet3_players = [];
+
+  for (action of history["seats"]) {
+    let seat = action.index;
+    let name = action.name;
+    let amount = action.amount;
+    let account = action.account;
+    let rounds = action.rounds;
+    id_list[name] = account.toString();
+    for(seat_action of action["actions"]) {
+      action_map[Date.parse(seat_action.time)] = {
+        type: seat_action.type,
+        name: action.name,
+        winnings: action.winnings,
+        cards: action.cards,
+        amount: seat_action.amount,
+        isBigBlind: action.isBigBlind,
+        isSmallBlind: action.isSmallBlind,
+        isDealer: action.isDealer
+      }
+    }
+  }
+
+  var action_keys = [];
+  for(k in action_map) {
+    action_keys.push(k);
+  }
+
+  action_keys = action_keys.sort();
+
+  action_keys.forEach(function(k) {
+    let actions = action_map[k];
+    let ts = k;
+    let preflop = round_map[0];
+    let flop = round_map[1];
+    let turn = round_map[2];
+    let river = round_map[3];
+    let street = "";
+    if(typeof river !== "undefined" && ts > river) {
+      street = "river"
+      if(!river_players.includes(actions.name)) {
+        river_players.push(actions.name);
+      }
+      if(actions.type == "FOLD") {
+        f_river_players.push(actions.name);
+      }
+    } else if(typeof turn !== "undefined" && ts > turn) {
+      street = "turn"
+    } else if(typeof flop !== "undefined" && ts > flop) {
+      street = "flop"
+      if(actions.type == "RAISE") {
+        if(actions.name !== aggressor_player) {
+          prev_bet_in = true;
+        }
+        if(prev_bet_in == false && actions.name == aggressor_player) {
+          cbet_player = actions.name;
+        }
+      }
+    } else if(typeof preflop !== "undefined" && ts > preflop) {
+      street = "preflop"
+      /**
+       * Determine vpip players
+       **/
+
+      if(actions.type == "CALL" || actions.type == "RAISE" || actions.type == "BET") {
+        vpip.push(actions.name);
+        if(actions.type == "CALL" && actions.isBigBlind == true) {
+          bb_def == true;
+        }
+      }
+      if(actions.type == "RAISE") {
+        /**
+         * Determine preflop raisers
+         **/
+
+        // Detect 3-bet
+        if(raise_highscore > 0 && actions.amount >= (raise_highscore * 3) && actions.amount <= (raise_highscore * 4)) {
+          bet3_players.push(actions.name);
+        }
+        if(actions.amount > raise_highscore) {
+          raise_highscore = actions.amount;
+        }
+        pfr_players.push(actions.name);
+        // Determine preflop aggressor. This is always the last raiser
+        aggressor_player = actions.name
+      }
+      // Add all players to in_hand
+      if(["FOLD", "CALL", "CHECK", "RAISE", "POST_BLIND"].includes(actions.type)) {
+        in_hand.push(actions.name);
+      }
+
+      // Determine positions
+      if(actions.isBigBlind == true) {
+        bb_player = actions.name;
+      }
+      if(actions.isSmallBlind == true) {
+        sb_player = actions.name;
+      }
+      if(actions.isDealer == true) {
+        btn_player = actions.name;
+      }
+
+    } else if(typeof preflop !== "undefined" && ts <= preflop) {
+      street = "blindpost"
+    }
+
+    let end_street = 0;
+    switch(street) {
+      case "preflop":
+        end_street = 0;
+        break;
+      case "flop":
+        end_street = 1;
+        break;
+      case "turn":
+        end_street = 2;
+        break;
+      case "river":
+        end_street = 3;
+        break;
+    }
+    if(end_street == last_round) {
+      let villain_name = actions.name;
+      let villain_pos = "unknown";
+      if(actions.isBigBlind == true) {
+        villain_pos = "bb";
+      } else if(actions.isSmallBlind == true) {
+        villain_pos = "sb";
+      } else if(actions.isDealer == true) {
+        villain_pos = "btn";
+      }
+      let villain_rank = [];
+      let villain_suit = [];
+
+      for(c of actions.cards) {
+        if(c.isRevealed !== true) {
+          continue;
+        }
+        if (c.holeCard == true) {
+          villain_rank.push(c.rank);
+          villain_suit.push(c.suit);
+        }
+      }
+      if(villain_rank.length > 0) {
+        let starting_hand = getSortedStartingHand(villain_rank, villain_suit);
+        let showdown_str = actions.name + "###" + villain_pos + "###" + starting_hand;
+        if(!showdowns.includes(showdown_str)) {
+          showdowns.push(showdown_str);
+        }
+      }
+    }
+  });
+
+  for(x of river_players) {
+    if(!f_river_players.includes(x)) {
+      sd_players.push(x);
+    }
+  }
+  return {
+    pfr_players: pfr_players,
+    aggressor_player: aggressor_player,
+    cbet_player: cbet_player,
+    showdowns: showdowns,
+    vpip: vpip.join(","),
+    in_hand: in_hand,
+    bb: bb_player,
+    bb_def: bb_def,
+    showdown_players: sd_players.join(","),
+    bet3_players: bet3_players.join(","),
+    id_list: id_list
+  }
+}
+
 // Extract hand history when hand concludes
 function checkEndOfHandAndProcess() {
   var review_button = $(".log-button[target='history']:not([processed])");
   if ($(review_button).is(":visible")) {
     var unique_code = $(review_button).attr("ng-href");
-    $(review_button).attr("processed", "true")
-    $("md-list-item[ng-repeat='log in logs']:not([processed])").each(function() {
-      is_chat = $(this).find('div[ng-if="::log.type === \'chat\'"]');
-      if (!$(is_chat).is(":visible")) {
-        player_name = $(this).find("button[ng-if='::log.player']").html();
-        player_id = getPlayerIdFromName(player_name);
-        villain_vpip[player_name] = false;
-        villain_mucked[player_name] = false;
-      }
-    });
-
-    // Find out who is the big blind
-    var acted = [];
-    var last_act = [];
-    var preflop_raiser = [];
-
-    $("md-list-item[ng-repeat='log in logs']:not([processed])").each(function() {
-      is_chat = $(this).find('div[ng-if="::log.type === \'chat\'"]');
-      if (!$(is_chat).is(":visible")) {
-        player_name = $(this).find("button[ng-if='::log.player']").html();
-        message = $(this).find('div[ng-if="log.message && log.message !== \'Community Cards \'"]');
-        if(!acted.includes(player_name)) {
-          if(typeof player !== 'undefined') {
-            if (typeof $(message).html() !== 'undefined') {
-              var action = $(message).html().split(" ");
-              last_act[player_name] = action[1];
-              if(["raised", "raises", "bet", "bets"].includes(action[1])) {
-                preflop_raiser.push(player_name);
-              }
-            }
-          }
-          if(typeof player_name !== "undefined") {
-            acted.push(player_name);
-          }
-        }
-        if(typeof player !== 'undefined') {
-          if (typeof $(message).html() !== 'undefined') {
-            var action = $(message).html().split(" ");
-            if(action[1].includes("fold")) {
-              villain_mucked[player_name] = true;
-            }
-          }
-        }
-      }
-    });
-
-    big_blind = acted.pop();
-    big_blind_checked = false;
-    big_blind_defended = false;
-    if(typeof last_act[big_blind] !== "undefined") {
-      last_act[big_blind] = last_act[big_blind].replace("&nbsp;", "");
+    if(typeof unique_code !== "undefined") {
+      var tmp_code = unique_code.split("=")[1];
+      window.postMessage({ type: 'history_id', text: tmp_code});
     }
-
-    if(last_act[big_blind] == "checked") {
-      big_blind_checked = true;
-    } else {
-      if(last_act[big_blind] == "called") {
-        big_blind_defended = true;
-      }
-    }
-
-    var consecutive_actions = [];
-
-    // c-bet detection
-    var cbet_player = "";
-    var aggressor_player = "";
-
-    if(typeof betting_action["PREFLOP"] !== "undefined" && typeof betting_action["FLOP"] !== "undefined") {
-      let preflop_aggressor = betting_action["PREFLOP"];
-      let flop_aggressor = betting_action["FLOP"];
-      if(preflop_aggressor === flop_aggressor) {
-        cbet_player = preflop_aggressor;
-      }
-      aggressor_player = preflop_aggressor;
-    }
-
-    $("md-list-item[ng-repeat='log in logs']:not([processed])").each(function() {
-      $(this).attr("processed", "true");
-      is_chat = $(this).find('div[ng-if="::log.type === \'chat\'"]');
-      if (!$(is_chat).is(":visible")) {
-        player = $(this).find("button[ng-if='::log.player']");
-        message = $(this).find('div[ng-if="log.message && log.message !== \'Community Cards \'"]');
-        if(typeof player !== 'undefined') {
-          if (typeof $(message).html() !== 'undefined') {
-            var action = $(message).html().split(" ");
-            if(typeof action !== "undefined") {
-              action[1] = action[1].replace("&nbsp;","");
-            }
-            var player_name = player.html();
-            switch(action[1]) {
-              case "bet":
-                villain_vpip[player_name] = true;
-                break;
-              case "bets":
-                villain_vpip[player_name] = true;
-                break;
-              case "calls":
-                villain_vpip[player_name] = true;
-                break;
-              case "called":
-                villain_vpip[player_name] = true;
-                break;
-              case "checked":
-                break;
-              case "folded":
-                villain_mucked[player_name] = true;
-                break;
-              case "folds":
-                villain_mucked[player_name] = true;
-                break;
-              case "raised":
-                villain_vpip[player_name] = true;
-                break;
-              case "raises":
-                villain_vpip[player_name] = true;
-                break;
-            }
-          }
-        }
-      }
-      card = $(this).find("div[ng-repeat='card in ::log.hand track by $index']");
-      $(card).each(function() {
-        rank = $(this).find(".rank").html();
-        suit_class = $(this).attr("class");
-        suit_arr = suit_class.split(" ");
-        if (typeof suit_class !== "undefined") {
-          var suit = "";
-          if (suit_arr.includes("HEARTS")) {
-            suit = "h";
-          }
-          if (suit_arr.includes("DIAMONDS")) {
-            suit = "d";
-          }
-          if (suit_arr.includes("SPADES")) {
-            suit = "s";
-          }
-          if (suit_arr.includes("CLUBS")) {
-            suit = "c";
-          }
-          if (typeof player !== "undefined") {
-            if(typeof villain_hands[player.html()] === "undefined") {
-              villain_hands[player.html()] = [];
-            }
-            villain_hands[player.html()].push(rank + suit);
-          }
-        }
-      });
-    });
-
-    non_vpip = [];
-    yes_vpip = [];
-    was_bb_def = false;
-
-    // Get list of players at table
-    var player_list = getPlayerList();
-
-    var mucked_players = [];
-    for (const [name, mucked] of Object.entries(villain_mucked)) {
-      if(mucked == true) {
-        if(player_list.includes(name)) {
-          mucked_players.push(name);
-        }
-      }
-    }
-
-    for (const [name, vpiped] of Object.entries(villain_vpip)) {
-      if(player_list.includes(name)) {
-        if(vpiped == true) {
-          if(big_blind != name) {
-            // If player was not bb, player definitely vpiped
-            yes_vpip.push(name);
-          } else {
-            if(big_blind_checked == true) {
-              // If the bb checked, he did not vpip
-              non_vpip.push(name);
-            } else {
-              // Here, villain is bb. BB either raised or called
-              // We should assume villain defended his blind here.
-              // We only count blind defends if villain flat called
-              // a preflop raise here though
-              if(big_blind_defended == true) {
-                was_bb_def = true;
-              } else {
-                was_bb = name;
-                was_bb_def = false;
-              }
-              yes_vpip.push(name);
-            }
-          }
-        } else {
-          if(name != 'undefined') {
-            non_vpip.push(name);
-          }
-        }
-      }
-    }
-
-    var showdowns = [];
-
-    for (const [name, cards] of Object.entries(villain_hands)) {
-      card_1 = cards[0];
-      card_2 = cards[1];
-      rank_1 = card_1[0];
-      rank_2 = card_2[0];
-      suit_1 = card_1[1];
-      suit_2 = card_2[1];
-      actual_hand = rank_1 + rank_2;
-
-      if (name !== "undefined") {
-        actual_hand = getSortedStartingHand([rank_1, rank_2], [suit_1, suit_2]);
-        seat_no = getPlayerSeat(name);
-        seat_pos = getSeatPosition(seat_no);
-
-        // Exclude villains who folded and showed their hand
-        if(!mucked_players.includes(name)) {
-          showdowns.push(name + "###" + seat_pos + "###" + actual_hand);
-        }
-      }
-    }
-
-    var player_id_map = {};
-    var concatted_names = non_vpip.concat(yes_vpip);
-    for(i in concatted_names) {
-      this_name = concatted_names[i];
-      this_id = getPlayerIdFromName(this_name);
-      player_id_map[this_name] = this_id;
-    }
-
-    result = {
-      pfr_players: preflop_raiser,
-      aggressor_player: aggressor_player,
-      cbet_player: cbet_player,
-      showdowns: showdowns,
-      vpip: yes_vpip.join(","),
-      in_hand: non_vpip.concat(yes_vpip),
-      bb: big_blind,
-      bb_def: was_bb_def,
-      id_list: player_id_map
-    }
-    villain_hands = [];
-    villain_vipip = [];
-    betting_action = [];
-    high_bet = 0;
-    addToHistory(result, unique_code);
-    return(result);
+    $(review_button).attr("processed", "true");
   }
 }
 
@@ -506,21 +627,18 @@ function getHandStrength(id, tid) {
     }
 
     if(evaluate_a.length >= 2) {
-      $.ajax({
-        url: 'https://api.blockchainpokerhud.com/gethandstrength/',
-        type: 'POST',
-        contentType: 'application/json',
-        data: JSON.stringify(
-          {
-            evaluate: [evaluate_a, evaluate_b],
-            api_key: apiKey + '_' + id + '_' + tid,
-          }
-        ),
-        dataType: 'json',
-        success: function(msg, status, jqXHR) {
-          hand_strength = msg; 
+      chrome.runtime.sendMessage(
+        {
+          "type": "getHandStrength",
+          "apiKey": apiKey,
+          "id": id,
+          "tid": tid,
+          "evaluate_a": evaluate_a,
+          "evaluate_b": evaluate_b
+        }, async response => {
+          hand_strength = response;
         }
-      });
+      );
     } else {
       hand_strength = "undefined";
       // There is no current hand strength to evaluate
@@ -529,45 +647,24 @@ function getHandStrength(id, tid) {
 }
 
 function getUpdate(id, tid) {
-  if(typeof apiKey !== "undefined" && apiKey !== "unset") {
-    $.ajax({
-      url: 'https://api.blockchainpokerhud.com/',
-      type: 'POST',
-      contentType: 'application/json',
-      data: JSON.stringify(
-        {
-          getupdate: "true",
-          api_key: apiKey + '_' + id + '_' + tid,
-        }
-      ),
-      dataType: 'json',
-      success: function(msg, status, jqXHR) {
-        hud_components = msg;
-      }
-    });
-  } else {
+  if(typeof apiKey === "undefined" && apiKey !== "unset") {
     chrome.storage.sync.get({
       apiKey: 'unset'
     }, function(items) {
       apiKey = items.apiKey;
-      if(typeof apiKey !== "undefined" && apiKey !== "unset") {
-        $.ajax({
-          url: 'https://api.blockchainpokerhud.com/',
-          type: 'POST',
-          contentType: 'application/json',
-          data: JSON.stringify(
-            {
-              getupdate: "true",
-              api_key: apiKey + '_' + id + '_' + tid,
-            }
-          ),
-          dataType: 'json',
-          success: function(msg, status, jqXHR) {
-            hud_components = msg;
-          }
-        });
+    })
+  }
+  if(typeof apiKey !== "undefined" && apiKey !== "unset") {
+    chrome.runtime.sendMessage(
+      {
+        "type": "getUpdate",
+        "apiKey": apiKey,
+        "id": id,
+        "tid": tid
+      }, async response => {
+        hud_components = response;
       }
-    });
+    );
   }
 }
 
@@ -829,8 +926,9 @@ function getSeatPosition(seat) {
 }
 
 function addToHistory(history, unique_code) {
-  var code_arr = unique_code.split("?")
-  hand_code = code_arr[1];
+  //var code_arr = unique_code.split("?")
+  //hand_code = code_arr[1];
+  hand_code = unique_code;
   var this_format = getMaxSeats();
 
   // Override table format if max-9 has insufficient players
@@ -844,18 +942,18 @@ function addToHistory(history, unique_code) {
   } else {
     isShortHanded = getNumberOfSeatedPlayers() < 6 ? "1" : "0";
   }
-
   $.ajax({
     url: 'https://api.blockchainpokerhud.com/',
     type: 'POST',
     contentType: 'application/json',
     data: JSON.stringify(
       {
-        data: history,
+        data: JSON.parse(history),
         unique_code: hand_code,
         api_key: apiKey,
         short_handed: isShortHanded,
-        table_format: getMaxSeats()
+        table_format: getMaxSeats(),
+        version: hud_version
       }
     ),
     dataType: 'json',
@@ -870,6 +968,7 @@ function addToHistory(history, unique_code) {
         villain_cb_hp_map[player] = msg[player].cb_hp;
         villain_bbd_hp_map[player] = msg[player].bbd_hp;
         villain_alias_map[player] = msg[player].aliases;
+        villain_is_weekly_map[player] = msg[player].is_weekly;
       });
     }
   });
@@ -1133,6 +1232,9 @@ function loadEVMap() {
 
 // Function to add commas to big numbers
 function displayNumber(x) {
+  if(typeof x == "undefined") {
+    return;
+  }
   return x.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
@@ -1140,6 +1242,23 @@ function displayNumber(x) {
 // Some of this is provided by table_state. We also
 // do cutoff and utg, however
 function getPosition(my_pos, dealer_pos, seats) {
+  var positions = table_state.positions;
+  if(typeof positions !== "undefined") {
+    var real_bb_pos = positions.bigBlind;
+    var real_sb_pos = positions.smallBlind;
+    var real_btn_pos = positions.dealer;
+
+    if(real_btn_pos == my_pos) {
+      return "btn";
+    }
+    if(real_sb_pos == my_pos) {
+      return "sb";
+    }
+    if(real_bb_pos == my_pos) {
+      return "bb";
+    }
+  }
+
   var my_pos_str = "unknown";
   if(seats.length >= 3) {
     var arr_dealer_pos = -1;
@@ -1469,6 +1588,7 @@ function getGameState() {
       historical_bbd = villain_bbd_map[villain_name];
       historical_cb = villain_cb_map[villain_name];
       historical_aliases = villain_alias_map[villain_name];
+      historical_is_weekly = villain_is_weekly_map[villain_name];
 
       // Store sample sizes
       historical_hp = villain_hp_map[villain_name];
@@ -1503,7 +1623,8 @@ function getGameState() {
         hp: historical_hp,
         cb_hp: historical_cb_hp,
         bbd_hp: historical_bbd_hp,
-        aliases: historical_aliases
+        aliases: historical_aliases,
+        is_weekly: historical_is_weekly
       };
     }
   });
@@ -1573,9 +1694,11 @@ function getPlayerIdFromSeat(index) {
 
 // Function updates our game state every second
 function updateGame() {
+  // Get state of table and state of self
+  window.postMessage({ type: 'table_state' });
+  window.postMessage({ type: 'you_state' });
   var table_name = getTableName();
   if (atTable()) {
-
     // Reset variables 
     players_seated = 0;
     max_seats = 0;
@@ -1606,6 +1729,12 @@ function updateGame() {
       $(search_button).after("<div class='benderhud ng-binding ng-scope log-item' style='font-size: 12px; background: #000; padding: 5px;'></div>");
     }
 
+    if(table_state.handId !== last_hand_id) {
+      last_hand_id = table_state.handId;
+      if(you_state.sittingOut == true) {
+        window.postMessage({ type: 'anti_idle', text: table_state.id});
+      }
+    }
     updateBettingAction();
 
     // Check for finished hands and process them
@@ -1647,6 +1776,8 @@ function updateGame() {
         $(this).attr("title", "aliases: " + villain_alias_map[villain_name]);
       }
 
+      var user_id = getPlayerIdFromName(villain_name);
+
       // Get state of villain
       var villain_state = game_state[villain_name]
 
@@ -1664,6 +1795,7 @@ function updateGame() {
         var is_in_pot = villain_state.in_pot;
         var position = villain_state.position;
         var active = villain_state.active;
+        var is_weekly = villain_state.is_weekly;
       }
 
       if(typeof villain_name !== "undefined") {
@@ -1706,6 +1838,21 @@ function updateGame() {
       var is_calling_station = false
       var is_maniac = false;
       var is_clown = false;
+      var is_top_earner = false;
+      var has_note = false;
+
+      if(typeof player_notes[villain_name] !== "undefined") {
+        has_note = true;
+      }
+
+      if(top_earners.includes(parseInt(user_id))) {
+        is_top_earner = true;
+      }
+
+      last_showdown_string = "";
+      if(typeof hand_history_map[user_id.toString()] !== "undefined") {
+        last_showdown_string = "<br /><hr />Previous strength: " + hand_history_map[user_id.toString()]; 
+      }
 
       if(typeof historical_vpip !== "undefined") {
         if(historical_vpip >= (vpip_threshold+10)) {
@@ -1800,27 +1947,49 @@ function updateGame() {
         var sample_sizes = "";
         if(typeof historical_cb_hp !== "undefined" && typeof historical_bbd_hp !== "undefined" && typeof historical_hp !== "undefined") {
           // Little info box with sample sizes for the hover text
-          sample_sizes = "<hr>Sample sizes:<br /><br />Hands: " + historical_hp + "<br />bbd%: " + historical_bbd_hp + "<br />cb%: " + historical_cb_hp;
+          if(is_weekly == true) {
+            weekly_str = " during the last two weeks.";
+          } else {
+            weekly_str = " since the beginning of time."
+          }
+          sample_sizes = "<hr>Stats are based on " + historical_hp + " hands played" + weekly_str;
+        }
+
+        var badge = "";
+        var badge_txt = "";
+
+        if(is_top_earner) {
+          badge = earner_icon;
+          badge_txt = "<hr>This player is in the top 100 earners this week!";
+        }
+
+        var note = "";
+        var note_txt = "";
+        if(has_note) {
+          note = note_icon;
+          note_txt = "<br /><hr><b>Notes</b>: " + player_notes[villain_name];
+          note_txt = note_txt.replace(/(?:\r\n|\r|\n)/g, '<br>');
+
         }
 
         if(villain_name == our_name) {
           postpend = " <div class='tooltip'>" + king_icon + "<span class='tooltiptext'>" + villain_name + " is a king! Hello, your grace.</span></div>";
         } else if(is_newbie === true) {
-          postpend = " <div class='tooltip'>" + newbie_icon + "<span class='tooltiptext'>" + villain_name + " does not have a significant hand history! Take these stats with a grain of salt." + sample_sizes + "</span></div>";
+          postpend = " <div class='tooltip'>" + newbie_icon + badge + note + "<span class='tooltiptext'>" + villain_name + " does not have a significant hand history! Take these stats with a grain of salt. These stats are based on the following number of hands per category: " + sample_sizes + badge_txt + note_txt + last_showdown_string + "</span></div>";
         } else if(is_clown === true) {
-          postpend = " <div class='tooltip'>" + clown_icon + "<span class='tooltiptext'>" + villain_name + " is a clown! Prepare to be donked." + sample_sizes + " </span></div>";
+          postpend = " <div class='tooltip'>" + clown_icon + badge + note + "<span class='tooltiptext'>" + villain_name + " is a clown! Prepare to be donked." + sample_sizes + badge_txt + note_txt + last_showdown_string + " </span></div>";
         } else if(is_maniac === true) {
-          postpend = " <div class='tooltip'>" + maniac_icon + "<span class='tooltiptext'>" + villain_name + " is very aggressive. Trap this maniac." + sample_sizes + "</span></div>";
+          postpend = " <div class='tooltip'>" + maniac_icon + badge + note + "<span class='tooltiptext'>" + villain_name + " is very aggressive. Trap this maniac." + sample_sizes + badge_txt + note_txt + last_showdown_string + "</span></div>";
         } else if(is_calling_station === true) {
-          postpend = " <div class='tooltip'>" + robot_icon + "<span class='tooltiptext'>" + villain_name + " is a calling station! Value bet all the way." + sample_sizes + "</span></div>";
+          postpend = " <div class='tooltip'>" + robot_icon + badge + note + "<span class='tooltiptext'>" + villain_name + " is a calling station! Value bet all the way." + sample_sizes + badge_txt + note_txt + last_showdown_string + "</span></div>";
         } else if(is_fish === true) {
-          postpend = " <div class='tooltip'>" + fish_icon + "<span class='tooltiptext'>" + villain_name + " is a fish! Happy fishing." + sample_sizes + " </span></div>";
+          postpend = " <div class='tooltip'>" + fish_icon + badge + note + "<span class='tooltiptext'>" + villain_name + " is a fish! Happy fishing." + sample_sizes + badge_txt + note_txt + last_showdown_string + " </span></div>";
         } else if (is_shark === true) {
-          postpend = " <div class='tooltip'>" + shark_icon + "<span class='tooltiptext'>" + villain_name + " is a shark! Be careful." + sample_sizes + "</span></div>";
+          postpend = " <div class='tooltip'>" + shark_icon + badge + note + "<span class='tooltiptext'>" + villain_name + " is a shark! Be careful." + sample_sizes + badge_txt + note_txt + last_showdown_string + "</span></div>";
         } else if (is_turtle === true) {
-          postpend = " <div class='tooltip'>" + turtle_icon + "<span class='tooltiptext'>" + villain_name + " is a turtle! They don't raise often." + sample_sizes + "</span></div>";
+          postpend = " <div class='tooltip'>" + turtle_icon + badge + note + "<span class='tooltiptext'>" + villain_name + " is a turtle! They don't raise often." + sample_sizes + badge_txt + note_txt + last_showdown_string + "</span></div>";
         } else {
-          postpend = " <div class='tooltip'>" + rainbow_icon + "<span class='tooltiptext'>" + villain_name + " is diverse! It is hard to pin this player down." + sample_sizes + "</span></div>";
+          postpend = " <div class='tooltip'>" + rainbow_icon + badge + note + "<span class='tooltiptext'>" + villain_name + " is diverse! It is hard to pin this player down." + sample_sizes + badge_txt + note_txt + last_showdown_string + "</span></div>";
         }
         $(this).find(".stats").html(villain_hud.join(", ") + postpend);
         $(this).find(".stats").attr("style","font-size: 11px; background: #000; left:8px; position: relative; padding: 2px 5px 2px; text-align: center");
@@ -1829,11 +1998,96 @@ function updateGame() {
 
     addTableDiv();
     var chips_in_play = getGrandTotalChipsInPlay();
-    $(".infobox").html("In play: " + displayNumber(chips_in_play.toFixed(2)));
+
+    var profit_loss = 0;
+    var profit_loss_string = "Winnings";
+    var profit_loss_colour = "green";
+    var quantity = "";
+    if(typeof transaction_history !== "undefined") {
+      if(typeof you_state !== "undefined") {
+        profit_loss += you_state.balance;
+        profit_loss += you_state.inPlay[table_state.currency];
+        if(typeof transaction_history["transactions"] !== "undefined") {
+          for (t of transaction_history["transactions"]) {
+            if(t.type == "DEPOSIT") {
+              profit_loss -= t.amount;
+            }
+            if(t.type == "WITHDRAWAL") {
+              profit_loss += t.amount;
+            }
+          }
+        }
+      }
+      if(profit_loss >= 1000000 || profit_loss <= -1000000) {
+        var q = 1000000;
+        quantity = "M";
+      } else if(profit_loss >= 1000 || profit_loss <= -1000) {
+        var q = 1000;
+        quantity = "K";
+      } else {
+        var q = 1;
+      }
+      if(profit_loss < 0) {
+        profit_loss_string = "Losses"
+        profit_loss_colour = "red"
+        profit_loss = Math.abs((profit_loss / q).toFixed(2));
+      } else {
+        profit_loss = (profit_loss / q).toFixed(2);
+      }
+    }
+
+    var open_tables_summary = [];
+
+    if (typeof open_tables !== "undefined") {
+      for (t of open_tables) {
+        // Limit to >= 1K BB, public tables, 6-max or higher with at least 2 active players
+        if(t.seatsTaken < 2 || t.numSeats < 6 || t.currency != table_state.currency || t.smallBlindAmount < 500 || t.isPrivate == true) {
+          continue;
+        }
+        if(table_state.name != t.name)
+        {
+          open_tables_summary.push("<a href='https://blockchain.poker/#/?table=" + t.id + "' target='_new' style='color: #fff; text-decoration: none;'>" + t.name + "</a> " + (displayNumber((t.smallBlindAmount*2)/1000)) + "k [" + t.seatsTaken + "/" + t.numSeats + "] <a href='https://blockchain.poker/#/?table=" + t.id + "' target='_new' style='color: #fff; text-decoration: none;'>&#128279;</a>");
+        }
+      }
+    }
+
+    var tournament_tables_summary = [];
+    if(typeof tournament_tables !== "undefined") {
+      for (t of tournament_tables) {
+        var startTime = Date.parse(t.startTime) / 1000;
+        var myts = Math.round((new Date()).getTime() / 1000);
+
+        if(t.isPrivate == true || t.buyInCost == 0 || t.isRegistrationOpen == false) {
+          continue;
+        }
+
+        if (startTime <= myts) {
+          var inMinutes = "LATEREG"
+        } else {
+          var startTimeSeconds = startTime - myts;
+          var inMinutes = Math.floor(startTimeSeconds / 60);
+        }
+
+        tournament_tables_summary.push("<a href='https://blockchain.poker/?tournament=" + t.id + "&affiliate=d4dff027c362ce10bba1669a592896a6" + "' target='_new' style='color: #fff; text-decoration: none;'>" + t.currency + "</a> " + (displayNumber((t.buyInCost)/1000)) + "/" + (displayNumber((t.prizePool)/1000)) + "k <a href='https://blockchain.poker/?tournament=" + t.id + "&affiliate=d4dff027c362ce10bba1669a592896a6" + t.id + "' target='_new' style='color: #fff; text-decoration: none;'>[" + inMinutes + "min] &#128279;</a>");
+      }
+    }
+
+    $(".infobox").html("In play: " + displayNumber(chips_in_play.toFixed(2)) + "<br />Rewards: " + displayNumber(rewards_balance) + "<br />" + profit_loss_string + ": <font color='" + profit_loss_colour + "'>" + profit_loss + quantity + "</font><br /><hr/ ><b>Cash games:</b><br />" + open_tables_summary.join("<br />") + "<hr /><b>Tournaments:</b><br />" + tournament_tables_summary.join("<br />"));
 
     getHandStrength(id, tid);
 
     var hud_prefix = "";
+
+    // Extract last hand value from hand history
+    if(typeof hand_history.seats !== "undefined") {
+      for(x of hand_history.seats) {
+        // Not sure if this is intentional, but the blockchain.poker
+        // getHistory() command returns the eventual hand strength
+        // for each player, regardless whether or not the hand
+        // went to showdown.
+        hand_history_map[x.account.toString()] = x.handRank;
+      }
+    }
 
     if(autotopup == true) {
       if(typeof table_state !== "undefined" && typeof you_state !== "undefined") {
